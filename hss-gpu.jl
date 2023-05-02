@@ -65,7 +65,6 @@ function to_gpu(hssA::HssMatrix{Float64})::CuHssMat
             add_mat!(Bs[depth], hssA.B21)
         end
     end
-
     fill(hssA, 1)
 
     return CuHssMat(
@@ -105,7 +104,6 @@ function prepare_mul(hssA::HssMatrix{Float64},
             push_blocks!(up_tasks[depth*2 - 1], dest_idx, dest_idx, dest_idx, dest_size)
             return dest_idx, dest_size
         else
-
             n1 = hssA.sz1[2]
             left_idx, left_size = fill_up_pass(hssA.A11, B[1:n1,:], depth+1)
             right_idx, right_size = fill_up_pass(hssA.A22, B[n1+1:end,:], depth+1)
@@ -152,7 +150,6 @@ function prepare_mul(hssA::HssMatrix{Float64},
             F2_idx = add_zero_mat!(F[depth], F2_size)
 
             # We need to find B and R matrices in the HssA GPU structure.
-            # THIS IS JUST A GUESS AS TO WHERE THEY ARE
             R1_idx = F1_idx
             R2_idx = F2_idx
 
@@ -168,7 +165,6 @@ function prepare_mul(hssA::HssMatrix{Float64},
             end
             push_blocks!(dn_tasks[B_task_idx], F1_idx, B12_idx, right_data_idx, F1_size)
             push_blocks!(dn_tasks[B_task_idx], F2_idx, B21_idx, left_data_idx, F2_size)
-
 
             fill_dn_pass(hssA.A11, C[1:m1,:], depth+1, F1_idx)
             fill_dn_pass(hssA.A22, C[m1+1:end,:], depth+1, F2_idx)
@@ -212,7 +208,6 @@ function matmul_gpu!(hssA::CuHssMat, B::CuBatchedMats, tmps::CuTmps)
         mul_accum_gpu!(tmps.data[dest_lvl], hssA.W1[dest_lvl], tmps.data[dest_lvl+1], tmps.up_tasks[j])
         mul_accum_gpu!(tmps.data[dest_lvl], hssA.W2[dest_lvl], tmps.data[dest_lvl+1], tmps.up_tasks[i])
     end
-
     # Down pass
     for (i, t) in enumerate(tmps.dn_tasks[1:end-2])
         lvl = (i + 1) ÷ 2
