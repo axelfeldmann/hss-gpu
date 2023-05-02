@@ -201,7 +201,7 @@ function check_dims(task, dest, src1, src2)
     end
 end
 
-function matmatup_gpu!(hssA::CuHssMat, B::CuBatchedMats, tmps::CuTmps)
+function matmul_gpu!(hssA::CuHssMat, B::CuBatchedMats, tmps::CuTmps)
     mul_accum_gpu!(tmps.data[end], hssA.V, B, tmps.up_tasks[end])
 
     # Up pass

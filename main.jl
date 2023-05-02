@@ -4,14 +4,12 @@ using Plots
 using Folds
 
 include("hss-gpu.jl")
-include("hss-ref.jl") 
 
 function test_correctness()
     K_(x,y) = (x-y) != 0 ? 1/(x-y) : 1.
     A = [ K_(x,y) for x=-1:0.0005:1, y=-1:0.0005:1]
     @show size(A)
     hssA = hss(A)
-
 
     B = rand(size(A, 1), 5)
 
@@ -20,11 +18,12 @@ function test_correctness()
     d_hssA = to_gpu(hssA)
     d_B, d_tmps = prepare_mul(hssA, B)
 
-    C_gpu = matmatup_gpu!(d_hssA, d_B, d_tmps)
+    C_gpu = matmul_gpu!(d_hssA, d_B, d_tmps)
     C_chunks = unpack(BatchedMats(C_gpu))
     C = vcat(C_chunks...)
 
     @assert C ≈ ref
+    println("Test passed")
 end
 
 # Check correctness
@@ -58,7 +57,7 @@ for (i, A_size) in enumerate(A_sizes)
         d_B, d_tmps = prepare_mul(hssA, B)
 
         cpu = @benchmark $hssA * $B
-        gpu = @benchmark matmatup_gpu!($d_hssA, $d_B, $d_tmps)
+        gpu = @benchmark matmul_gpu!($d_hssA, $d_B, $d_tmps)
 
         results[i, j] = mean(cpu.times) / mean(gpu.times)
     end
