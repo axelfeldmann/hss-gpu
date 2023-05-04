@@ -1,25 +1,28 @@
 using CUDA
 using LinearAlgebra
 
-const thrs_per_block = 1024
+const block_dim = 32
 
 mutable struct Task
     dest_idx::Vector{Int64}
     src1_idx::Vector{Int64}
     src2_idx::Vector{Int64}
-    block_idx::Vector{Int64}
+    block_row::Vector{Int64}
+    block_col::Vector{Int64}
 end
 
 struct CuTask
     dest_idx::CuArray{Int64}
     src1_idx::CuArray{Int64}
     src2_idx::CuArray{Int64}
-    block_idx::CuArray{Int64}
-    CuTask(task::Task) = new(CuArray(task.dest_idx), CuArray(task.src1_idx), CuArray(task.src2_idx), CuArray(task.block_idx))
+    block_row::CuArray{Int64}
+    block_col::CuArray{Int64}
+    CuTask(task::Task) = new(CuArray(task.dest_idx), CuArray(task.src1_idx), CuArray(task.src2_idx), 
+                             CuArray(task.block_row), CuArray(task.block_col))
 end
 
 function Task(t::CuTask)
-    return Task(t.dest_idx, t.src1_idx, t.src2_idx, t.block_idx)
+    return Task(t.dest_idx, t.src1_idx, t.src2_idx, t.block_row, t.block_col)
 end
 
 mutable struct BatchedMats
@@ -133,12 +136,18 @@ function add_mat!(batch::BatchedMats, t::Transpose{Float64, Matrix{Float64}})
 end
 
 function push_blocks!(task::Task, dest_idx::Int64, src1_idx::Int64, src2_idx::Int64, (rows, cols)::Tuple{Int64, Int64})
-    num_blocks = cld(rows * cols, thrs_per_block)
-    for i in 1:num_blocks
-        push!(task.dest_idx, dest_idx)
-        push!(task.src1_idx, src1_idx)
-        push!(task.src2_idx, src2_idx)
-        push!(task.block_idx, i)
+
+    block_rows = cld(rows, block_dim)
+    block_cols = cld(cols, block_dim)
+
+    for r in 1:block_rows
+        for c in 1:block_cols
+            push!(task.dest_idx, dest_idx)
+            push!(task.src1_idx, src1_idx)
+            push!(task.src2_idx, src2_idx)
+            push!(task.block_row, r)
+            push!(task.block_col, c)
+        end
     end
 end
 
@@ -186,22 +195,27 @@ function is_empty(t::CuTask)
     return length(t.dest_idx) == 0
 end
 
+function get_idx(start, rows, r, c)
+    return start + (c - 1) * rows + (r - 1)
+end
+
 function kern(dest_rows, dest_cols, dest_starts, dest_data,
               src1_rows, src1_cols, src1_starts, src1_data,
               src2_rows, src2_cols, src2_starts, src2_data,
-              task_dest_idxs, task_src1_idxs, task_src2_idxs, task_block_idxs)
+              task_dest_idxs, task_src1_idxs, task_src2_idxs, 
+              task_block_rows, task_block_cols)
 
     b = blockIdx().x
 
-    M_task = task_block_idxs[b]
+    block_row = task_block_rows[b]
+    block_col = task_block_cols[b]
 
-    t = threadIdx().x
+    tc = threadIdx().x
+    tr = threadIdx().y
 
     M_idx = task_dest_idxs[b]
     A_idx = task_src1_idxs[b]
     B_idx = task_src2_idxs[b]
-
-    M_pos = (M_task - 1) * thrs_per_block + (t - 1)
 
     M_start = dest_starts[M_idx]
     M_rows = dest_rows[M_idx]
@@ -213,24 +227,56 @@ function kern(dest_rows, dest_cols, dest_starts, dest_data,
 
     B_start = src2_starts[B_idx]
     B_rows = src2_rows[B_idx]
-    B_cols = src2_cols[B_idx]
+
+    i = (block_row - 1) * blockDim().y + tr
+    j = (block_col - 1) * blockDim().x + tc
 
     @assert A_cols == B_rows
-    if M_pos >= M_rows * M_cols
-        return
+
+    dest_idx = get_idx(M_start, M_rows, i, j)
+    accum = 0
+
+    s_A = @cuStaticSharedMem(eltype(src1_data), (block_dim, block_dim))
+    s_B = @cuStaticSharedMem(eltype(src2_data), (block_dim, block_dim))
+
+    num_tiles = cld(A_cols, block_dim)
+    for tile in 1:num_tiles
+        tile_start_col_A = (tile - 1) * block_dim
+        tile_start_row_B = (tile - 1) * block_dim
+
+        s_A_col = tile_start_col_A + tc
+        s_B_row = tile_start_row_B + tr
+
+        # Load elements into the shared memory for matrix A
+        if i <= A_rows && s_A_col <= A_cols
+            s_A[tr, tc] = src1_data[get_idx(A_start, A_rows, i, s_A_col)]
+        else
+            s_A[tr, tc] = 0
+        end
+
+        # Load elements into the shared memory for matrix B
+        if s_B_row <= B_rows && j <= M_cols
+            s_B[tr, tc] = src2_data[get_idx(B_start, B_rows, s_B_row, j)]
+        else
+            s_B[tr, tc] = 0
+        end
+
+        sync_threads()
+
+        # Perform computation with the loaded tile
+        if i <= M_rows && j <= M_cols
+            for k in 1:block_dim
+                accum += s_A[tr, k] * s_B[k, tc]
+            end
+        end
+
+        sync_threads()
     end
 
-    j = M_pos ÷ M_rows
-    i = M_pos % M_rows
-    accum = dest_data[M_start + M_pos]
-
-    for k in 0:(A_cols-1)
-        a = src1_data[A_start + k * A_rows + i]
-        b = src2_data[B_start + j * B_rows + k]
-        accum += a * b
+    if i <= M_rows && j <= M_cols
+        dest_data[dest_idx] = accum
     end
 
-    dest_data[M_start + M_pos] = accum
     return
 end
 
@@ -241,15 +287,16 @@ function mul_accum_gpu!(d_dest::CuBatchedMats, d_src1::CuBatchedMats, d_src2::Cu
     end
 
     CUDA.@sync begin
-        @cuda threads=thrs_per_block blocks=blocks kern(d_dest.rows_dev, d_dest.cols_dev, d_dest.starts_dev, d_dest.data_dev,
+        @cuda threads=(block_dim,block_dim) blocks=blocks kern(d_dest.rows_dev, d_dest.cols_dev, d_dest.starts_dev, d_dest.data_dev,
                                                         d_src1.rows_dev, d_src1.cols_dev, d_src1.starts_dev, d_src1.data_dev,
                                                         d_src2.rows_dev, d_src2.cols_dev, d_src2.starts_dev, d_src2.data_dev,
-                                                        d_task.dest_idx, d_task.src1_idx, d_task.src2_idx, d_task.block_idx)
+                                                        d_task.dest_idx, d_task.src1_idx, d_task.src2_idx, 
+                                                        d_task.block_row, d_task.block_col)
     end
 end
 
 function allocate_result(A::CuBatchedMats, B::CuBatchedMats)
-    task = Task([], [], [], [])
+    task = Task([], [], [], [], [])
     dest = BatchedMats()
     for (i, (A_rows, A_cols, B_rows, B_cols)) in enumerate(zip(A.rows, A.cols, B.rows, B.cols))
         res_size = (A_rows, B_cols)

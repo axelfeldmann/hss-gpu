@@ -1,7 +1,6 @@
 using HssMatrices
 using BenchmarkTools
 using Plots
-using Folds
 
 include("hss-gpu.jl")
 
@@ -37,10 +36,10 @@ function make_hss(A_size)
 end
 
 # Benchmark performance
-A_sizes = [ 500, 1000, 2000, 8000, 16000, 32000 ]
-hss_mats = Folds.map(make_hss, A_sizes)
+A_sizes = [ 500, 1000, 2500, 5000, 7500, 10000, 12500, 15000, 17500, 20000, 22500, 25000, 27500, 30000, 32500, 35000 ]
+hss_mats = [ make_hss(A_size) for A_size in A_sizes ]
 
-bcols = [ 1, 4, 16, 64, 256, 1024 ]
+bcols = [ 1, 2, 4, 16, 64, 256, 1024, 4096 ]
 results = zeros(length(A_sizes), length(bcols))
 
 for (i, A_size) in enumerate(A_sizes)
